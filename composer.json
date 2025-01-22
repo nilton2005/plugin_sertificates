@@ -1,0 +1,7 @@
+{
+    "require": {
+        "google/apiclient": "^2.18",
+        "endroid/qr-code": "^6.0",
+        "tecnickcom/tcpdf": "^6.8"
+    }
+}
