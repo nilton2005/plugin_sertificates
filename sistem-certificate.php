@@ -25,6 +25,7 @@ class CertificateSystem {
     const CRON_INTERVAL = '4hours';
 
     private function __construct() {
+        set_time_limit(350);
         $this->init_config();
         $this->init_logger();
         $this->init_hooks();
@@ -85,6 +86,7 @@ class CertificateSystem {
         $this->create_database_tables();
         $this->create_required_directories();
         $this->schedule_cron();
+        //$this->process_pending_certificates();
     }
 
     public function deactivate() {
@@ -166,29 +168,51 @@ class CertificateSystem {
         }
     }
 
-    private function get_pending_certificates() {
+    public function get_pending_certificates() {
         global $wpdb;
-        
         $sql = "
-            SELECT u.ID AS student_id, 
-                   u.display_name AS nombre_completo,
-                   um.meta_value AS dni,
-                   p.post_title AS course_name,
-                   q.attempt_started_at AS ultima_fecha, 
-                   q.earned_marks AS nota,
-                   q.course_id
-            FROM {$wpdb->prefix}tutor_quiz_attempts q
-            JOIN {$wpdb->prefix}users u ON q.user_id = u.ID
-            LEFT JOIN {$wpdb->prefix}usermeta um ON u.ID = um.user_id AND um.meta_key = 'dni'
-            JOIN {$wpdb->prefix}posts p ON q.course_id = p.ID
-            WHERE q.earned_marks >= %d
+
+        SELECT 
+            u.ID AS student_id,
+            u.display_name AS nombre_completo,
+            um.meta_value AS dni,
+            p.post_title AS course_name,
+            q.attempt_started_at AS ultima_fecha,
+            q.earned_marks AS nota,
+            q.course_id
+        FROM 
+            {$wpdb->prefix}tutor_quiz_attempts q
+        JOIN 
+            {$wpdb->prefix}users u ON q.user_id = u.ID
+        LEFT JOIN 
+            {$wpdb->prefix}usermeta um ON u.ID = um.user_id AND um.meta_key = 'dni'
+        JOIN 
+            {$wpdb->prefix}posts p ON q.course_id = p.ID
+        WHERE 
+            q.earned_marks >= 15
+            AND q.attempt_started_at = (
+                SELECT MAX( inner_q.attempt_started_at )
+                FROM {$wpdb->prefix}tutor_quiz_attempts inner_q
+                WHERE inner_q.user_id = q.user_id
+                    AND inner_q.course_id = q.course_id
+                    AND inner_q.earned_marks >= 15
+                    AND inner_q.earned_marks = (
+                        SELECT MAX(inner_inner_q.earned_marks)
+                        FROM {$wpdb->prefix}tutor_quiz_attempts inner_inner_q
+                        WHERE inner_inner_q.user_id = q.user_id
+                            AND inner_inner_q.course_id = q.course_id
+                            AND inner_inner_q.earned_marks >= 15
+                    )
+
+            )
             AND NOT EXISTS (
-                SELECT 1 FROM {$wpdb->prefix}certificados_generados c
+                SELECT 1 
+                FROM {$wpdb->prefix}certificados_generados c
                 WHERE c.student_id = u.ID AND c.course_id = q.course_id
             )
-            LIMIT 50
+        LIMIT 50;
+
         ";
-        
         return $wpdb->get_results($wpdb->prepare($sql, $this->config['min_passing_score']));
     }
 
@@ -241,35 +265,35 @@ class CertificateSystem {
 
             // First template text placement
             imagettftext(
-                $image1, 30, 0, 300, 300, 
+                $image1, 30, 0, 350, 325, 
                 $colors['name'], 
                 $this->config['fonts']['nunito'], 
                 $data->nombre_completo
             );
 
             imagettftext(
-                $image1, 14, 0, 250, 400, 
+                $image1, 14, 0, 675, 382, 
                 $colors['dni'], 
                 $this->config['fonts']['arimo'], 
                 $data->dni
             );
 
             imagettftext(
-                $image1, 25, 0, 250, 500, 
+                $image1, 25, 0, 430, 438, 
                 $colors['course'], 
                 $this->config['fonts']['dm_serif'], 
                 $data->course_name
             );
 
             imagettftext(
-                $image1, 14, 0, 450, 600, 
+                $image1, 14, 0, 750, 565, 
                 $colors['date'], 
                 $this->config['fonts']['arimo'], 
                 date('d/m/Y', strtotime($data->ultima_fecha))
             );
 
             imagettftext(
-                $image1, 14, 0, 200, 400, 
+                $image1, 14, 0, 275, 565, 
                 $colors['code'], 
                 $this->config['fonts']['dm_serif'], 
                 $code
@@ -277,28 +301,28 @@ class CertificateSystem {
 
             // Second template text placement
             imagettftext(
-                $image2, 39, 0, 300, 100, 
+                $image2, 39, 0, 360, 100, 
                 $colors['course2'], 
                 $this->config['fonts']['dm_serif'], 
                 $data->course_name
             );
 
             imagettftext(
-                $image2, 36, 0, 200, 150, 
+                $image2, 36, 0, 220, 200, 
                 $colors['course2'], 
                 $this->config['fonts']['dm_serif'], 
                 'Aprobado'
             );
 
             imagettftext(
-                $image2, 36, 0, 400, 300, 
+                $image2, 36, 0, 720, 200, 
                 $colors['course2'], 
                 $this->config['fonts']['nunito'], 
                 number_format($data->nota, 1)
             );
 
             // Add syllabus to second template
-            imagecopy($image2, $syllabus, 200, 500, 0, 0, 1000, 1000);
+            imagecopy($image2, $syllabus, 170, 335, 0, 0, 800, 300);
 
             // Save images
             $output_path1 = __DIR__ . '/certificates/png/certificado1_edited.png';
@@ -342,6 +366,18 @@ class CertificateSystem {
                 __DIR__ . '/certificates/png/certificado2_edited.png', 
                 0, 0, 297, 210
             );
+
+            $certificate =  $this->config['signature']['certificate'];
+            $key = $this->config['signature']['key'];
+            $password = $this->config['signature']['password'];
+
+            if(!file_exists($certificate)){
+                throw new Exception("El archivo del certifcao no existe");
+            }
+            if(!file_exists($key)){
+                throw new Exception("el archivo de la clave privada no existe");
+            }
+
 
             // Set document signing properties
             $pdf->setSignature(
@@ -484,7 +520,7 @@ class CertificateSystem {
             [
                 'status' => $status,
                 'error_message' => $error_message,
-                'attempts' => new Raw('attempts + 1'),
+                'attempts' => $wpdb->get_var($wpdb->prepare("SELECT attempts + 1 FROM $table WHERE student_id = %d AND course_id = %d", $student_id, $course_id)),
                 'last_attempt' => current_time('mysql')
             ],
             [
@@ -511,5 +547,5 @@ class CertificateSystem {
 
 // add_action('plugins_loaded', 'initialize_certificate_system');
 
-$make = CertificateSystem::get_instance();
-$make->activate();
+// $make = CertificateSystem::get_instance();
+// $make->activate();
