@@ -11,11 +11,13 @@ if (!defined('ABSPATH')) {
 }
 
 require_once(__DIR__ . '/vendor/tecnickcom/tcpdf/tcpdf.php');
+require_once(__DIR__. '/lib/phpqrcode/qrlib.php');
 require_once('vendor/autoload.php');
 
 use Google_Service_Drive;
 
 class CertificateSystem {
+    
     private static $instance = null;
     private $google_client;
     private $logger;
@@ -46,6 +48,7 @@ class CertificateSystem {
                 'slide1' => __DIR__ . '/assets/templates/Diapositiva1.png',
                 'slide2' => __DIR__ . '/assets/templates/Diapositiva2.png',
                 'syllabus' => __DIR__ . '/assets/templates/tem_first_auxi.png'
+        
             ],
             'fonts' => [
                 'nunito' => __DIR__ . '/assets/fonts/Nunito-Italic-VariableFont_wght.ttf',
@@ -86,7 +89,7 @@ class CertificateSystem {
         $this->create_database_tables();
         $this->create_required_directories();
         $this->schedule_cron();
-        //$this->process_pending_certificates();
+        $this->process_pending_certificates();
     }
 
     public function deactivate() {
@@ -324,6 +327,11 @@ class CertificateSystem {
             // Add syllabus to second template
             imagecopy($image2, $syllabus, 170, 335, 0, 0, 800, 300);
 
+            //$code = $data->codigo_unico;
+            // Add QR code to first template
+            // $qr_code = $this->generate_qr_code($code);
+            // imagecopy($image1, $qr_code, 50, 50, 0, 0, 200, 200);
+            
             // Save images
             $output_path1 = __DIR__ . '/certificates/png/certificado1_edited.png';
             $output_path2 = __DIR__ . '/certificates/png/certificado2_edited.png';
@@ -337,6 +345,7 @@ class CertificateSystem {
             imagedestroy($syllabus);
 
             $this->logger->log("Certificate images generated successfully for student {$data->student_id}");
+            // imagedestroy($qr_code);
 
             return [$output_path1, $output_path2];
 
@@ -345,6 +354,84 @@ class CertificateSystem {
             throw $e;
         }
     }
+
+    // private function generate_qr_code($code){
+
+    //     try {
+    //         // Obtener la URL actual con el código de certificado
+    //         $current_url = add_query_arg('code', urlencode($code), get_permalink());
+
+    //         // Crear directorio si no existe
+    //         //$upload_dir = wp_upload_dir();
+    //         $qr_dir = plugin_dir_path(__FILE__) . 'assets/qr-codes/';
+    //         if (!file_exists($qr_dir)) {
+    //             wp_mkdir_p($qr_dir);
+    //         }
+
+    //         // Guardar el código QR como archivo PNG
+    //         $qr_filename = 'certificate_' . md5($code) . '.png';
+    //         $qr_file = $qr_dir . $qr_filename;
+
+    //         // Generar QR con mayor tamaño y nivel de corrección de errores alto
+    //         QRcode::png($current_url, $qr_file, QR_ECLEVEL_H, 15, 2, false);
+
+    //         // Cargar el QR generado
+    //         $QR = imagecreatefrompng($qr_file);
+
+    //         // Cargar el logo (ajusta la ruta a tu logo)
+    //         $logo = imagecreatefrompng(plugin_dir_path(__FILE__) . 'assets/logo.png');
+            
+    //         // Obtener dimensiones
+    //         $QR_width = imagesx(image: $QR);
+    //         $QR_height = imagesy($QR);
+    //         $logo_width = imagesx($logo);
+    //         $logo_height = imagesy($logo);
+
+    //         // Calcular posición para centrar el logo
+    //         $logo_qr_width = $QR_width/3;
+    //         $scale = $logo_width/$logo_qr_width;
+    //         $logo_qr_height = $logo_height/$scale;
+            
+    //         $from_width = ($QR_width - $logo_qr_width)/2;
+    //         $from_height = ($QR_height - $logo_qr_height)/2;
+
+    //         // Copiar y redimensionar el logo sobre el QR
+    //         imagecopyresampled($QR, $logo,
+    //             $from_width, $from_height, 0, 0,
+    //             $logo_qr_width, $logo_qr_height, $logo_width, $logo_height
+    //         );
+
+    //         // Guardar el QR con el logo
+    //         imagepng($QR, $qr_file);
+
+    //         // Liberar memoria
+    //         imagedestroy($logo);
+
+
+    //         // programar la eliminación del archivo después de 5 minutos
+    //         $this->schedule_qr_deletion($qr_file);
+            
+            
+    //         // retornar la ruta del archivo para copiar al certificado
+    //         return $QR;
+
+    //     } catch (Exception $e) {
+    //         error_log('Error al generar el código QR: ' . $e->getMessage());
+    //             if (file_exists($qr_file)) {
+    //                 unlink($qr_file);
+    //             }
+    //     }
+
+
+    // }
+    // // this function is for delete the qr code after 5 minutes
+    // private function schedule_qr_deletion($qr_file) {
+    //     if (file_exists($qr_file)) {
+    //         // Programar la eliminación para después de 5 minutos
+    //         wp_schedule_single_event(time() + 300, 'delete_qr_file', array($qr_file));
+    //     };
+    // }
+
 
     private function generate_signed_pdf() {
         try {
@@ -540,12 +627,19 @@ class CertificateSystem {
     }
 }
 
+// function delete_qr_file_callback($qr_file) {
+//     if (file_exists($qr_file)) {
+//         unlink($qr_file);
+//     }
+// }
 
+// Add the hook outside of any class/function
+//add_action('delete_qr_file', 'delete_qr_file_callback');
 // function initialize_certificate_system() {
 //     return CertificateSystem::get_instance();
 // }
 
-// add_action('plugins_loaded', 'initialize_certificate_system');
+//add_action('plugins_loaded', 'initialize_certificate_system');
 
-// $make = CertificateSystem::get_instance();
-// $make->activate();
+$make = CertificateSystem::get_instance();
+$make->activate();
