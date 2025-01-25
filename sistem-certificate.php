@@ -1,11 +1,8 @@
 <?php
 /**
- * Plugin Name: Sistema de Certificados
- * Description: Sistema para generar y gestionar certificados automáticos
- * Version: 2.0
- * Author: Oracle S.A.C
+ * Certificate Generation System
+ * Modular approach for WordPress certificate management
  */
-
 if (!defined('ABSPATH')) {
     exit;
 }
@@ -15,40 +12,19 @@ require_once(__DIR__. '/lib/phpqrcode/qrlib.php');
 require_once('vendor/autoload.php');
 
 use Google_Service_Drive;
-
-class CertificateSystem {
-    
-    private static $instance = null;
-    private $google_client;
-    private $logger;
+set_time_limit(450);
+class CertificateConfig {
     private $config;
 
-    const CRON_HOOK = 'certificate_generation_cron';
-    const CRON_INTERVAL = '4hours';
-
-    private function __construct() {
-        set_time_limit(350);
-        $this->init_config();
-        $this->init_logger();
-        $this->init_hooks();
-    }
-
-    public static function get_instance() {
-        if (self::$instance === null) {
-            self::$instance = new self();
-        }
-        return self::$instance;
-    }
-
-    private function init_config() {
+    public function __construct() {
         $this->config = [
             'root_folder_id' => '1hl1XZm3lrUGkPfXkoYowH0mj4-Of9Zuc',
             'min_passing_score' => 15,
             'template_path' => [
                 'slide1' => __DIR__ . '/assets/templates/Diapositiva1.png',
                 'slide2' => __DIR__ . '/assets/templates/Diapositiva2.png',
-                'syllabus' => __DIR__ . '/assets/templates/tem_first_auxi.png'
-        
+                'syllabus' => __DIR__ . '/assets/templates/tem_first_auxi.png',
+                'logo' => __DIR__ . '/assets/logo.png'
             ],
             'fonts' => [
                 'nunito' => __DIR__ . '/assets/fonts/Nunito-Italic-VariableFont_wght.ttf',
@@ -58,58 +34,23 @@ class CertificateSystem {
             'signature' => [
                 'certificate' => __DIR__ . '/assets/digital-signature/public.crt',
                 'key' => __DIR__ . '/assets/digital-signature/private.key',
-                'password' => 'gutemberg192837465',
-                'info' => [
-                    'Name' => 'Oracle Perú S.A.C',
-                    'Location' => 'Arequipa',
-                    'Reason' => 'Certificado de aprobación',
-                    'ContactInfo' => 'https://www.consultoriaoracleperusac.org.pe/'
-                ]
+                'password' => 'gutemberg192837465'
             ]
         ];
+        // generate table if note exists
+        if ($this->table_not_exists()) {
+            $this->create_database_tables();
+        }       
+    }
+    public function table_not_exists() {
+        global $wpdb;
+        $table_name = $wpdb->prefix . 'certificados_generados';
+        $sql = "SHOW TABLES LIKE '$table_name'";
+        $results = $wpdb->get_results($sql);
+        return count($results) === 0;
     }
 
-    private function init_logger() {
-        $this->logger = new class {
-            public function log($message, $level = 'info') {
-                error_log("[Certificate System][$level] $message");
-            }
-        };
-    }
-
-    private function init_hooks() {
-        register_activation_hook(__FILE__, [$this, 'activate']);
-        register_deactivation_hook(__FILE__, [$this, 'deactivate']);
-        
-        add_filter('cron_schedules', [$this, 'add_cron_interval']);
-        add_action(self::CRON_HOOK, [$this, 'process_pending_certificates']);
-    }
-
-    public function activate() {
-        $this->create_database_tables();
-        $this->create_required_directories();
-        $this->schedule_cron();
-        $this->process_pending_certificates();
-    }
-
-    public function deactivate() {
-        wp_clear_scheduled_hook(self::CRON_HOOK);
-    }
-
-    public function add_cron_interval($schedules) {
-        $schedules[self::CRON_INTERVAL] = [
-            'interval' => 4 * HOUR_IN_SECONDS,
-            'display' => 'Every 4 Hours'
-        ];
-        return $schedules;
-    }
-
-    private function schedule_cron() {
-        if (!wp_next_scheduled(self::CRON_HOOK)) {
-            wp_schedule_event(time(), self::CRON_INTERVAL, self::CRON_HOOK);
-        }
-    }
-
+    // create functino to create tablle in database
     private function create_database_tables() {
         global $wpdb;
         $charset_collate = $wpdb->get_charset_collate();
@@ -142,39 +83,404 @@ class CertificateSystem {
         dbDelta($sql);
     }
 
-    private function create_required_directories() {
-        $dirs = [
-            __DIR__ . '/certificates/png',
-            __DIR__ . '/certificates/pdf',
-            __DIR__ . '/logs'
+
+    public function get($key) {
+        return $this->config[$key] ?? null;
+    }
+
+
+}
+
+class CertificateLogger {
+    public function log($message, $level = 'info') {
+        error_log("[Certificate System][$level] $message");
+    }
+}
+
+class CertificateQRGenerator {
+    private $config;
+    private $logger;
+
+    public function __construct(CertificateConfig $config, CertificateLogger $logger) {
+        $this->config = $config;
+        $this->logger = $logger;
+    }
+
+    public function generateQRWithLogo($code) {
+        $qr_dir = plugin_dir_path(__FILE__) . 'assets/qr-codes/';
+        wp_mkdir_p($qr_dir);
+
+        $qr_filename = 'certificate_' . md5($code . time()) . '.png';
+        $qr_file = $qr_dir . $qr_filename;
+
+        $current_url = add_query_arg('code', urlencode($code), get_permalink());
+        QRcode::png($current_url, $qr_file, QR_ECLEVEL_H, 15, 2, false);
+        
+        $QR = imagecreatefrompng($qr_file);
+        $logo = imagecreatefrompng($this->config->get('template_path')['logo']);
+        
+        $this->overlayLogoOnQR($QR, $logo);
+        
+        imagepng($QR, $qr_file);
+        imagedestroy($logo);
+        
+        return $QR;
+    }
+
+    private function overlayLogoOnQR(&$QR, $logo) {
+        $QR_width = imagesx($QR);
+        $QR_height = imagesy($QR);
+        $logo_width = imagesx($logo);
+        $logo_height = imagesy($logo);
+        
+        $logo_qr_width = $QR_width/3;
+        $scale = $logo_width/$logo_qr_width;
+        $logo_qr_height = $logo_height/$scale;
+        
+        $from_width = ($QR_width - $logo_qr_width)/2;
+        $from_height = ($QR_height - $logo_qr_height)/2;
+        
+        imagecopyresampled($QR, $logo,
+            $from_width, $from_height, 0, 0,
+            $logo_qr_width, $logo_qr_height, 
+            $logo_width, $logo_height
+        );
+    }
+}
+
+class CertificateImageGenerator {
+    private $config;
+    private $logger;
+    private $qrGenerator;
+
+    public function __construct(CertificateConfig $config, CertificateLogger $logger, CertificateQRGenerator $qrGenerator) {
+        $this->config = $config;
+        $this->logger = $logger;
+        $this->qrGenerator = $qrGenerator;
+    }
+
+    public function generateCertificateImages($data, $code) {
+        try {
+            $image_templates = $this->loadTemplates();
+            $colors = $this->defineColors($image_templates);
+            
+            $this->renderFirstTemplateText($image_templates['base1'], $data, $colors, $code);
+            $this->renderSecondTemplateText($image_templates['base2'], $data, $colors);
+            
+            $qr_code = $this->qrGenerator->generateQRWithLogo($code);
+            
+            $this->addQRAndSyllabus($image_templates, $qr_code);
+            
+            $output_paths = $this->saveImages($image_templates);
+            
+            $this->cleanupResources($image_templates, $qr_code);
+            
+            return $output_paths;
+        } catch (Exception $e) {
+            $this->logger->log("Certificate image generation error: " . $e->getMessage(), 'error');
+            throw $e;
+        }
+    }
+
+    private function loadTemplates() {
+        $template_paths = $this->config->get('template_path');
+        return [
+            'base1' => imagecreatefrompng($template_paths['slide1']),
+            'base2' => imagecreatefrompng($template_paths['slide2']),
+            'syllabus' => imagecreatefrompng($template_paths['syllabus'])
+        ];
+    }
+
+    private function defineColors($images) {
+        return [
+            'name' => imagecolorallocate($images['base1'], 0, 32, 96),
+            'dni' => imagecolorallocate($images['base1'], 53, 55, 68),
+            'course' => imagecolorallocate($images['base1'], 7, 55, 99),
+            'code' => imagecolorallocate($images['base1'], 66, 66, 66),
+            'date' => imagecolorallocate($images['base1'], 53, 55, 68),
+            'course2' => imagecolorallocate($images['base2'], 35, 58, 68)
+        ];
+    }
+
+    private function renderFirstTemplateText($image, $data, $colors, $code) {
+        $fonts = $this->config->get('fonts');
+        $text_configs = [
+            ['text' => $data->nombre_completo, 'x' => 350, 'y' => 325, 'size' => 30, 'font' => $fonts['nunito'], 'color' => $colors['name']],
+            ['text' => $data->dni, 'x' => 675, 'y' => 382, 'size' => 14, 'font' => $fonts['arimo'], 'color' => $colors['dni']],
+            ['text' => $data->course_name, 'x' => 430, 'y' => 438, 'size' => 25, 'font' => $fonts['dm_serif'], 'color' => $colors['course']],
+            ['text' => date('d/m/Y', strtotime($data->ultima_fecha)), 'x' => 750, 'y' => 565, 'size' => 14, 'font' => $fonts['arimo'], 'color' => $colors['date']],
+            ['text' => $code, 'x' => 275, 'y' => 565, 'size' => 14, 'font' => $fonts['dm_serif'], 'color' => $colors['code']]
         ];
 
-        foreach ($dirs as $dir) {
-            if (!file_exists($dir)) {
-                mkdir($dir, 0755, true);
-            }
+        foreach ($text_configs as $config) {
+            imagettftext(
+                $image, 
+                $config['size'], 
+                0, 
+                $config['x'], 
+                $config['y'], 
+                $config['color'], 
+                $config['font'], 
+                $config['text']
+            );
         }
     }
 
-    public function process_pending_certificates() {
-        $this->logger->log('Starting certificate processing job');
+    private function renderSecondTemplateText($image, $data, $colors) {
+        $fonts = $this->config->get('fonts');
+        $text_configs = [
+            ['text' => $data->course_name, 'x' => 360, 'y' => 100, 'size' => 39, 'font' => $fonts['dm_serif'], 'color' => $colors['course2']],
+            ['text' => 'Aprobado', 'x' => 220, 'y' => 200, 'size' => 36, 'font' => $fonts['dm_serif'], 'color' => $colors['course2']],
+            ['text' => number_format($data->nota, 1), 'x' => 720, 'y' => 200, 'size' => 36, 'font' => $fonts['nunito'], 'color' => $colors['course2']]
+        ];
+
+        foreach ($text_configs as $config) {
+            imagettftext(
+                $image, 
+                $config['size'], 
+                0, 
+                $config['x'], 
+                $config['y'], 
+                $config['color'], 
+                $config['font'], 
+                $config['text']
+            );
+        }
+    }
+
+    private function addQRAndSyllabus($templates, $qr_code) {
+        imagecopy($templates['base1'], $qr_code, 20, 20, 0, 0, 100, 100);
+        imagecopy($templates['base2'], $templates['syllabus'], 170, 335, 0, 0, 800, 300);
+    }
+
+    private function saveImages($templates) {
+        $output_paths = [
+            __DIR__ . '/certificates/png/certificado1_edited.png',
+            __DIR__ . '/certificates/png/certificado2_edited.png'
+        ];
         
+        imagepng($templates['base1'], $output_paths[0]);
+        imagepng($templates['base2'], $output_paths[1]);
+
+        return $output_paths;
+    }
+
+    private function cleanupResources($templates, $qr_code) {
+        foreach ($templates as $image) {
+            imagedestroy($image);
+        }
+        imagedestroy($qr_code);
+    }
+}
+
+class CertificateDriveUploader {
+    private $config;
+    private $logger;
+    private $google_client;
+
+    public function __construct(CertificateConfig $config, CertificateLogger $logger) {
+        $this->config = $config;
+        $this->logger = $logger;
+    }
+
+    public function uploadToDrive($file_path, $certificateData) {
+        // TODO: Implement Google Drive upload logic
         try {
-            $pending_certificates = $this->get_pending_certificates();
-            
-            foreach ($pending_certificates as $certificate) {
-                $this->process_single_certificate($certificate);
+            // Initialize Google Client if not already done
+            if (!$this->google_client) {
+                $this->google_client = new Google_Client();
+                $this->google_client->setAuthConfig(__DIR__ . "/credentials.json");
+                $this->google_client->addScope(Google_Service_Drive::DRIVE);
             }
+
+            $service = new Google_Service_Drive($this->google_client);
+
+            // Create folder structure: year/course/student_name
+            $folder_path = date('Y') . '/' . $certificateData->course_name . '/' . $certificateData->nombre_completo;
+            $folder_id = $this->create_folder_structure($service, $folder_path);
+
+            // Prepare file metadata
+            $file_metadata = new Google_Service_Drive_DriveFile([
+                'name' => "certificado_{$certificateData->dni}.pdf",
+                'parents' => [$folder_id]
+            ]);
+
+            // Upload file
+            $content = file_get_contents($file_path);
+            $file = $service->files->create($file_metadata, [
+                'data' => $content,
+                'mimeType' => 'application/pdf',
+                'uploadType' => 'multipart',
+                'fields' => 'id'
+            ]);
+
+            // Set file permissions (public read access)
+            $permission = new Google_Service_Drive_Permission([
+                'type' => 'anyone',
+                'role' => 'reader',
+            ]);
+            $service->permissions->create($file->id, $permission);
+
+            // Generate download URL
+            $download_url = "https://drive.google.com/uc?export=download&id=" . $file->id;
             
+            $this->logger->log("Certificate uploaded successfully to Google Drive for student {$certificateData->student_id}");
+            
+            return $download_url;
+
         } catch (Exception $e) {
-            $this->logger->log("Error processing certificates: " . $e->getMessage(), 'error');
+            $this->logger->log("Error uploading to Google Drive: " . $e->getMessage(), 'error');
+            throw $e;
+        }
+}
+
+
+    private function create_folder_structure($service, $folder_path) {
+    
+
+        $current_parent = $this->config->get('root_folder_id');
+        $folders = explode('/', $folder_path);
+
+        foreach ($folders as $folder_name) {
+            // Search for existing folder
+            $query = "mimeType='application/vnd.google-apps.folder' and name='$folder_name' and '$current_parent' in parents and trashed=false";
+            $results = $service->files->listFiles([
+                'q' => $query,
+                'spaces' => 'drive',
+                'fields' => 'files(id, name)'
+            ]);
+
+            // Create folder if it doesn't exist
+            if (count($results->getFiles()) == 0) {
+                $folder_metadata = new Google_Service_Drive_DriveFile([
+                    'name' => $folder_name,
+                    'mimeType' => 'application/vnd.google-apps.folder',
+                    'parents' => [$current_parent]
+                ]);
+                $folder = $service->files->create($folder_metadata, ['fields' => 'id']);
+                $current_parent = $folder->id;
+            } else {
+                $current_parent = $results->getFiles()[0]->getId();
+            }
+        }
+
+        return $current_parent;
+    }
+
+
+
+}
+class CertificatePDFGenerator {
+    private $config;
+    private $logger;
+
+    public function __construct(CertificateConfig $config, CertificateLogger $logger) {
+        $this->config = $config;
+        $this->logger = $logger;
+    }
+
+    public function generateSignedPDF($certificate_images) {
+        try {
+            $pdf = new TCPDF('L', 'mm', 'A4');
+            $pdf->SetAutoPageBreak(false);
+            $pdf->SetMargins(0, 0, 0);
+
+            // Add first page
+            $pdf->AddPage();
+            $pdf->Image($certificate_images[0], 0, 0, 297, 210);
+
+            // Add second page
+            $pdf->AddPage();
+            $pdf->Image($certificate_images[1], 0, 0, 297, 210);
+
+            // Set document signing properties
+            $pdf->setSignature(
+                $this->config->get('signature')['certificate'],
+                $this->config->get('signature')['key'],
+                $this->config->get('signature')['password']
+            );
+
+            $output_path = __DIR__ . '/certificates/pdf/certificado.pdf';
+            $pdf->Output($output_path, 'F');
+
+            $this->logger->log("PDF generated and signed successfully");
+            return $output_path;
+
+        } catch (Exception $e) {
+            $this->logger->log("PDF generation error: " . $e->getMessage(), 'error');
+            throw $e;
+        }
+    }
+}
+
+class CertificateManager {
+    private $config;
+    private $logger;
+    private $imageGenerator;
+    private $pdfGenerator;
+    private $driveUploader;
+
+    public function __construct() {
+        $this->config = new CertificateConfig();
+        $this->logger = new CertificateLogger();
+        $qrGenerator = new CertificateQRGenerator($this->config, $this->logger);
+        $this->imageGenerator = new CertificateImageGenerator($this->config, $this->logger, $qrGenerator);
+        $this->pdfGenerator = new CertificatePDFGenerator($this->config, $this->logger);
+        $this->driveUploader = new CertificateDriveUploader($this->config, $this->logger);
+    }
+
+    public function processCertificate($certificateData) {
+        try {
+            $code = wp_generate_uuid4();
+            $certificate_images = $this->imageGenerator->generateCertificateImages($certificateData, $code);
+            $pdf_path = $this->pdfGenerator->generateSignedPDF($certificate_images);
+            $drive_url = $this->driveUploader->uploadToDrive($pdf_path, $certificateData);
+            
+            $this->saveCertificateToDatabase($certificateData, $code, $drive_url);
+            
+            $this->cleanupTemporaryFiles($certificate_images, $pdf_path);
+        } catch (Exception $e) {
+            $this->logger->log("Certificate processing error: " . $e->getMessage(), 'error');
         }
     }
 
-    public function get_pending_certificates() {
+    private function saveCertificateToDatabase($data, $code, $drive_url) {
         global $wpdb;
-        $sql = "
+        $wpdb->insert(
+            $wpdb->prefix . 'certificados_generados',
+            [
+                'dni' => $data->dni,
+                'codigo_unico' => $code,
+                'student_id' => $data->student_id,
+                'nombre' => $data->nombre_completo,
+                'curso' => $data->course_name,
+                'course_id' => $data->course_id,
+                'nota' => $data->nota,
+                'fecha_emision' => current_time('mysql'),
+                'emisor' => get_bloginfo('name'),
+                'enlace_drive' => $drive_url,
+                'status' => 'completed'
+            ]
+        );
+    }
 
+    private function cleanupTemporaryFiles($certificate_images, $pdf_path) {
+        foreach ($certificate_images as $image) {
+            if (file_exists($image)) {
+                unlink($image);
+            }
+        }
+        if (file_exists($pdf_path)) {
+            unlink($pdf_path);
+        }
+    }
+}
+
+// Function to get pending certificates from database
+function get_pending_certificates() {
+    global $wpdb;
+    return $wpdb->get_results(
+        "
         SELECT 
             u.ID AS student_id,
             u.display_name AS nombre_completo,
@@ -206,7 +512,6 @@ class CertificateSystem {
                             AND inner_inner_q.course_id = q.course_id
                             AND inner_inner_q.earned_marks >= 15
                     )
-
             )
             AND NOT EXISTS (
                 SELECT 1 
@@ -214,432 +519,47 @@ class CertificateSystem {
                 WHERE c.student_id = u.ID AND c.course_id = q.course_id
             )
         LIMIT 50;
-
-        ";
-        return $wpdb->get_results($wpdb->prepare($sql, $this->config['min_passing_score']));
-    }
-
-    private function process_single_certificate($data) {
-        try {
-            // Generate unique code
-            $certificate_code = wp_generate_uuid4();
-            
-            // Create certificate images
-            $this->generate_certificate_images($data, $certificate_code);
-            
-            // Convert to PDF
-            $pdf_path = $this->generate_signed_pdf();
-            
-            // Upload to Drive
-            $drive_url = $this->upload_to_drive($pdf_path, $data);
-            
-            // Save to database
-            $this->save_certificate_data($data, $certificate_code, $drive_url);
-            
-            // Cleanup temporary files
-            $this->cleanup_temporary_files();
-            
-        } catch (Exception $e) {
-            $this->logger->log("Error processing certificate for student {$data->student_id}: " . $e->getMessage(), 'error');
-            $this->update_certificate_status($data->student_id, $data->course_id, 'failed', $e->getMessage());
-        }
-    }
-
-    private function generate_certificate_images($data, $code) {
-        try {
-            // Create base images
-            $image1 = imagecreatefrompng($this->config['template_path']['slide1']);
-            $image2 = imagecreatefrompng($this->config['template_path']['slide2']);
-            $syllabus = imagecreatefrompng($this->config['template_path']['syllabus']);
-
-            if (!$image1 || !$image2 || !$syllabus) {
-                throw new Exception('Error loading template images');
-            }
-
-            // Define colors
-            $colors = [
-                'name' => imagecolorallocate($image1, 0, 32, 96),
-                'dni' => imagecolorallocate($image1, 53, 55, 68),
-                'course' => imagecolorallocate($image1, 7, 55, 99),
-                'code' => imagecolorallocate($image1, 66, 66, 66),
-                'date' => imagecolorallocate($image1, 53, 55, 68),
-                'course2' => imagecolorallocate($image2, 35, 58, 68)
-            ];
-
-            // First template text placement
-            imagettftext(
-                $image1, 30, 0, 350, 325, 
-                $colors['name'], 
-                $this->config['fonts']['nunito'], 
-                $data->nombre_completo
-            );
-
-            imagettftext(
-                $image1, 14, 0, 675, 382, 
-                $colors['dni'], 
-                $this->config['fonts']['arimo'], 
-                $data->dni
-            );
-
-            imagettftext(
-                $image1, 25, 0, 430, 438, 
-                $colors['course'], 
-                $this->config['fonts']['dm_serif'], 
-                $data->course_name
-            );
-
-            imagettftext(
-                $image1, 14, 0, 750, 565, 
-                $colors['date'], 
-                $this->config['fonts']['arimo'], 
-                date('d/m/Y', strtotime($data->ultima_fecha))
-            );
-
-            imagettftext(
-                $image1, 14, 0, 275, 565, 
-                $colors['code'], 
-                $this->config['fonts']['dm_serif'], 
-                $code
-            );
-
-            // Second template text placement
-            imagettftext(
-                $image2, 39, 0, 360, 100, 
-                $colors['course2'], 
-                $this->config['fonts']['dm_serif'], 
-                $data->course_name
-            );
-
-            imagettftext(
-                $image2, 36, 0, 220, 200, 
-                $colors['course2'], 
-                $this->config['fonts']['dm_serif'], 
-                'Aprobado'
-            );
-
-            imagettftext(
-                $image2, 36, 0, 720, 200, 
-                $colors['course2'], 
-                $this->config['fonts']['nunito'], 
-                number_format($data->nota, 1)
-            );
-
-            // Add syllabus to second template
-            imagecopy($image2, $syllabus, 170, 335, 0, 0, 800, 300);
-
-            //$code = $data->codigo_unico;
-            // Add QR code to first template
-            // $qr_code = $this->generate_qr_code($code);
-            // imagecopy($image1, $qr_code, 50, 50, 0, 0, 200, 200);
-            
-            // Save images
-            $output_path1 = __DIR__ . '/certificates/png/certificado1_edited.png';
-            $output_path2 = __DIR__ . '/certificates/png/certificado2_edited.png';
-
-            imagepng($image1, $output_path1);
-            imagepng($image2, $output_path2);
-
-            // Cleanup
-            imagedestroy($image1);
-            imagedestroy($image2);
-            imagedestroy($syllabus);
-
-            $this->logger->log("Certificate images generated successfully for student {$data->student_id}");
-            // imagedestroy($qr_code);
-
-            return [$output_path1, $output_path2];
-
-        } catch (Exception $e) {
-            $this->logger->log("Error generating certificate images: " . $e->getMessage(), 'error');
-            throw $e;
-        }
-    }
-
-    // private function generate_qr_code($code){
-
-    //     try {
-    //         // Obtener la URL actual con el código de certificado
-    //         $current_url = add_query_arg('code', urlencode($code), get_permalink());
-
-    //         // Crear directorio si no existe
-    //         //$upload_dir = wp_upload_dir();
-    //         $qr_dir = plugin_dir_path(__FILE__) . 'assets/qr-codes/';
-    //         if (!file_exists($qr_dir)) {
-    //             wp_mkdir_p($qr_dir);
-    //         }
-
-    //         // Guardar el código QR como archivo PNG
-    //         $qr_filename = 'certificate_' . md5($code) . '.png';
-    //         $qr_file = $qr_dir . $qr_filename;
-
-    //         // Generar QR con mayor tamaño y nivel de corrección de errores alto
-    //         QRcode::png($current_url, $qr_file, QR_ECLEVEL_H, 15, 2, false);
-
-    //         // Cargar el QR generado
-    //         $QR = imagecreatefrompng($qr_file);
-
-    //         // Cargar el logo (ajusta la ruta a tu logo)
-    //         $logo = imagecreatefrompng(plugin_dir_path(__FILE__) . 'assets/logo.png');
-            
-    //         // Obtener dimensiones
-    //         $QR_width = imagesx(image: $QR);
-    //         $QR_height = imagesy($QR);
-    //         $logo_width = imagesx($logo);
-    //         $logo_height = imagesy($logo);
-
-    //         // Calcular posición para centrar el logo
-    //         $logo_qr_width = $QR_width/3;
-    //         $scale = $logo_width/$logo_qr_width;
-    //         $logo_qr_height = $logo_height/$scale;
-            
-    //         $from_width = ($QR_width - $logo_qr_width)/2;
-    //         $from_height = ($QR_height - $logo_qr_height)/2;
-
-    //         // Copiar y redimensionar el logo sobre el QR
-    //         imagecopyresampled($QR, $logo,
-    //             $from_width, $from_height, 0, 0,
-    //             $logo_qr_width, $logo_qr_height, $logo_width, $logo_height
-    //         );
-
-    //         // Guardar el QR con el logo
-    //         imagepng($QR, $qr_file);
-
-    //         // Liberar memoria
-    //         imagedestroy($logo);
-
-
-    //         // programar la eliminación del archivo después de 5 minutos
-    //         $this->schedule_qr_deletion($qr_file);
-            
-            
-    //         // retornar la ruta del archivo para copiar al certificado
-    //         return $QR;
-
-    //     } catch (Exception $e) {
-    //         error_log('Error al generar el código QR: ' . $e->getMessage());
-    //             if (file_exists($qr_file)) {
-    //                 unlink($qr_file);
-    //             }
-    //     }
-
-
-    // }
-    // // this function is for delete the qr code after 5 minutes
-    // private function schedule_qr_deletion($qr_file) {
-    //     if (file_exists($qr_file)) {
-    //         // Programar la eliminación para después de 5 minutos
-    //         wp_schedule_single_event(time() + 300, 'delete_qr_file', array($qr_file));
-    //     };
-    // }
-
-
-    private function generate_signed_pdf() {
-        try {
-            // Initialize TCPDF
-            $pdf = new TCPDF('L', 'mm', 'A4');
-            $pdf->SetAutoPageBreak(false);
-            $pdf->SetMargins(0, 0, 0);
-
-            // Add first page
-            $pdf->AddPage();
-            $pdf->Image(
-                __DIR__ . '/certificates/png/certificado1_edited.png', 
-                0, 0, 297, 210
-            );
-
-            // Add second page
-            $pdf->AddPage();
-            $pdf->Image(
-                __DIR__ . '/certificates/png/certificado2_edited.png', 
-                0, 0, 297, 210
-            );
-
-            $certificate =  $this->config['signature']['certificate'];
-            $key = $this->config['signature']['key'];
-            $password = $this->config['signature']['password'];
-
-            if(!file_exists($certificate)){
-                throw new Exception("El archivo del certifcao no existe");
-            }
-            if(!file_exists($key)){
-                throw new Exception("el archivo de la clave privada no existe");
-            }
-
-
-            // Set document signing properties
-            $pdf->setSignature(
-                $this->config['signature']['certificate'],
-                $this->config['signature']['key'],
-                $this->config['signature']['password'],
-                '',
-                2,
-                $this->config['signature']['info']
-            );
-
-            // Save PDF
-            $output_path = __DIR__ . '/certificates/pdf/certificado.pdf';
-            $pdf->Output($output_path, 'F');
-
-            $this->logger->log("PDF generated and signed successfully");
-
-            return $output_path;
-
-        } catch (Exception $e) {
-            $this->logger->log("Error generating PDF: " . $e->getMessage(), 'error');
-            throw $e;
-        }
-    }
-
-    private function upload_to_drive($pdf_path, $data) {
-        try {
-            // Initialize Google Client if not already done
-            if (!$this->google_client) {
-                $this->google_client = new Google_Client();
-                $this->google_client->setAuthConfig(__DIR__ . "/credentials.json");
-                $this->google_client->addScope(Google_Service_Drive::DRIVE);
-            }
-
-            $service = new Google_Service_Drive($this->google_client);
-
-            // Create folder structure: year/course/student_name
-            $folder_path = date('Y') . '/' . $data->course_name . '/' . $data->nombre_completo;
-            $folder_id = $this->create_folder_structure($service, $folder_path);
-
-            // Prepare file metadata
-            $file_metadata = new Google_Service_Drive_DriveFile([
-                'name' => "certificado_{$data->dni}.pdf",
-                'parents' => [$folder_id]
-            ]);
-
-            // Upload file
-            $content = file_get_contents($pdf_path);
-            $file = $service->files->create($file_metadata, [
-                'data' => $content,
-                'mimeType' => 'application/pdf',
-                'uploadType' => 'multipart',
-                'fields' => 'id'
-            ]);
-
-            // Set file permissions (public read access)
-            $permission = new Google_Service_Drive_Permission([
-                'type' => 'anyone',
-                'role' => 'reader',
-            ]);
-            $service->permissions->create($file->id, $permission);
-
-            // Generate download URL
-            $download_url = "https://drive.google.com/uc?export=download&id=" . $file->id;
-            
-            $this->logger->log("Certificate uploaded successfully to Google Drive for student {$data->student_id}");
-            
-            return $download_url;
-
-        } catch (Exception $e) {
-            $this->logger->log("Error uploading to Google Drive: " . $e->getMessage(), 'error');
-            throw $e;
-        }
-    }
-
-    private function create_folder_structure($service, $folder_path) {
-        $current_parent = $this->config['root_folder_id'];
-        $folders = explode('/', $folder_path);
-
-        foreach ($folders as $folder_name) {
-            // Search for existing folder
-            $query = "mimeType='application/vnd.google-apps.folder' and name='$folder_name' and '$current_parent' in parents and trashed=false";
-            $results = $service->files->listFiles([
-                'q' => $query,
-                'spaces' => 'drive',
-                'fields' => 'files(id, name)'
-            ]);
-
-            // Create folder if it doesn't exist
-            if (count($results->getFiles()) == 0) {
-                $folder_metadata = new Google_Service_Drive_DriveFile([
-                    'name' => $folder_name,
-                    'mimeType' => 'application/vnd.google-apps.folder',
-                    'parents' => [$current_parent]
-                ]);
-                $folder = $service->files->create($folder_metadata, ['fields' => 'id']);
-                $current_parent = $folder->id;
-            } else {
-                $current_parent = $results->getFiles()[0]->getId();
-            }
-        }
-
-        return $current_parent;
-    }
-
-
-
-
-
-    
-
-    private function save_certificate_data($data, $code, $drive_url) {
-        global $wpdb;
-        $table = $wpdb->prefix . 'certificados_generados';
-        
-        $wpdb->insert(
-            $table,
-            [
-                'dni' => $data->dni,
-                'codigo_unico' => $code,
-                'student_id' => $data->student_id,
-                'nombre' => $data->nombre_completo,
-                'curso' => $data->course_name,
-                'course_id' => $data->course_id,
-                'nota' => $data->nota,
-                'fecha_emision' => current_time('mysql'),
-                'emisor' => get_bloginfo('name'),
-                'enlace_drive' => $drive_url,
-                'status' => 'completed'
-            ]
-        );
-    }
-
-    private function update_certificate_status($student_id, $course_id, $status, $error_message = '') {
-        global $wpdb;
-        $table = $wpdb->prefix . 'certificados_generados';
-        
-        $wpdb->update(
-            $table,
-            [
-                'status' => $status,
-                'error_message' => $error_message,
-                'attempts' => $wpdb->get_var($wpdb->prepare("SELECT attempts + 1 FROM $table WHERE student_id = %d AND course_id = %d", $student_id, $course_id)),
-                'last_attempt' => current_time('mysql')
-            ],
-            [
-                'student_id' => $student_id,
-                'course_id' => $course_id
-            ]
-        );
-    }
-
-    private function cleanup_temporary_files() {
-        $temp_files = glob(__DIR__ . '/certificates/png/*_edited.png');
-        foreach ($temp_files as $file) {
-            if (is_file($file)) {
-                unlink($file);
-            }
-        }
-    }
+        "
+    );
 }
 
-// function delete_qr_file_callback($qr_file) {
-//     if (file_exists($qr_file)) {
-//         unlink($qr_file);
-//     }
-// }
+// Integration hook
+function process_certificate_generation() {
+    $certificate_manager = new CertificateManager();
+    $certificate_data = get_pending_certificates();
+    
+    foreach ($certificate_data as $certificate) {
+        $certificate_manager->processCertificate($certificate);
+    }
+ }
 
-// Add the hook outside of any class/function
-//add_action('delete_qr_file', 'delete_qr_file_callback');
-// function initialize_certificate_system() {
-//     return CertificateSystem::get_instance();
-// }
 
-//add_action('plugins_loaded', 'initialize_certificate_system');
 
-$make = CertificateSystem::get_instance();
-$make->activate();
+
+add_action('certificate_generation_hook', 'process_certificate_generation');
+
+if (defined('WP_DEBUG') && WP_DEBUG) {
+  
+    add_action('admin_notices', function() {
+        if (isset($_GET['certificates_generated'])) {
+            ?>
+            <div class="notice notice-success">
+                <p>Certificates generation process completed!</p>
+            </div>
+            <?php
+        }
+    });
+
+  
+    add_action('admin_init', function() {
+        if (current_user_can('manage_options')) {
+            do_action('certificate_generation_hook');
+            wp_redirect(add_query_arg('certificates_generated', '1'));
+            exit;
+        }
+    });
+}
+$prueba_data = get_pending_certificates();
+echo '<pre>';
+print_r($prueba_data);
+echo '</pre>';

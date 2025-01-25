@@ -1,0 +1,14 @@
+# Credentials
+*.pem
+*.key
+*.crt
+
+# temporary files
+/certificates/png/*
+/assets/qr-codes/*
+!.gitkeep
+config.php
+credentials.json
+credentials/*.json
+*.p12
+/lib
