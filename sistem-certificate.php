@@ -1,8 +1,11 @@
 <?php
 /**
- * Certificate Generation System
- * Modular approach for WordPress certificate management
+* Plugin Name: Generador de Certificados
+* Description: Un plugin para generar certificados automáticamente.
+* Version: 3.0
+* Author: Oracle Perú S.A.C.
  */
+
 if (!defined('ABSPATH')) {
     exit;
 }
@@ -10,6 +13,43 @@ if (!defined('ABSPATH')) {
 require_once(__DIR__ . '/vendor/tecnickcom/tcpdf/tcpdf.php');
 require_once(__DIR__. '/lib/phpqrcode/qrlib.php');
 require_once('vendor/autoload.php');
+
+register_activation_hook(__FILE__, function(){
+    error_log('Plugin activandose');
+    correr_cada_cuatro_horas(wp_get_schedules());
+    configurar_cronograma_certificados();
+});
+register_deactivation_hook(__FILE__, 'eliminar_cronograma_certificados');
+
+// llamar a todo el plugin cada 4 horas
+function correr_cada_cuatro_horas($schedules) {
+    $schedules['cada_cuatro_horas'] = array(
+        'interval' => 14400,
+        'display' => 'Cada 4 horas'
+    );
+    return $schedules;
+}
+add_filter('cron_schedules', 'correr_cada_cuatro_horas');
+
+// configura el cronograma cron
+function configurar_cronograma_certificados() {
+    error_log('Configurando cronograma para generación de certificados--------');
+
+    if (!wp_next_scheduled('auto_certificate_generation')) {
+        $resultado = wp_schedule_event(time(), 'cada_cuatro_horas', 'auto_certificate_generation');
+        error_log('Resultado de programacion: '. ($resultado ? 'exitoso' : 'fallido'));
+    }
+    debug_certificate_cron();
+}
+
+// limpiar el cronogram al desactivar el plu
+function eliminar_cronograma_certificados() {
+    wp_clear_scheduled_hook('auto_certificate_generation');
+}
+
+// hook para la generacion automatica
+add_action('auto_certificate_generation', 'process_certificate_generation');
+
 
 use Google_Service_Drive;
 set_time_limit(450);
@@ -527,39 +567,85 @@ function get_pending_certificates() {
 function process_certificate_generation() {
     $certificate_manager = new CertificateManager();
     $certificate_data = get_pending_certificates();
+
+    if(empty($certificate_data)){
+        error_log('[Certificate System] no hay certififacdos pendientes por hacer');
+        return;
+    }
+    error_log('[Certificate System] procesando certificados pendientes' . count($certificate_data) . 'certificados');
     
     foreach ($certificate_data as $certificate) {
-        $certificate_manager->processCertificate($certificate);
+        try{
+            $certificate_manager->processCertificate($certificate);
+        } catch (Exception $e) {
+            error_log('[Certificate System] error al procesar certificado: ' . $e->getMessage());
+        }
     }
  }
 
 
 
 
-add_action('certificate_generation_hook', 'process_certificate_generation');
+// add_action('certificate_generation_hook', 'process_certificate_generation');
 
-if (defined('WP_DEBUG') && WP_DEBUG) {
+// if (defined('WP_DEBUG') && WP_DEBUG) {
   
-    add_action('admin_notices', function() {
-        if (isset($_GET['certificates_generated'])) {
-            ?>
-            <div class="notice notice-success">
-                <p>Certificates generation process completed!</p>
-            </div>
-            <?php
-        }
-    });
+//     add_action('admin_notices', function() {
+//         if (isset($_GET['certificates_generated'])) {
+//            
+ //             <div class="notice notice-success">
+//                 <p>Certificates generation process completed!</p>
+//             </div>
+//             
+//         }
+//     });
 
   
-    add_action('admin_init', function() {
-        if (current_user_can('manage_options')) {
-            do_action('certificate_generation_hook');
-            wp_redirect(add_query_arg('certificates_generated', '1'));
-            exit;
-        }
-    });
+//     add_action('admin_init', function() {
+//         if (current_user_can('manage_options')) {
+//             do_action('certificate_generation_hook');
+//             wp_redirect(add_query_arg('certificates_generated', '1'));
+//             exit;
+//         }
+//     });
+// }
+// $prueba_data = get_pending_certificates();
+// echo '<pre>';
+// print_r($prueba_data);
+// echo '</pre>';
+
+// Función de utilidad para verificar el próximo evento programado
+function check_next_certificate_generation() {
+    $next_scheduled = wp_next_scheduled('auto_certificate_generation');
+    if ($next_scheduled) {
+        return 'Próxima generación de certificados programada para: ' . date('Y-m-d H:i:s', $next_scheduled);
+    }
+    return 'No hay generación de certificados programada.';
 }
-$prueba_data = get_pending_certificates();
-echo '<pre>';
-print_r($prueba_data);
-echo '</pre>';
+
+// Para mostrar el estado
+add_action('admin_notices', function() {
+    echo '<div class="notice notice-info"><p>' . check_next_certificate_generation() . '</p></div>';
+});
+
+
+// Añade esta función de diagnóstico
+function debug_certificate_cron() {
+    // 1. Verificar si el cron está registrado
+    $crons = _get_cron_array();
+    error_log('Crons programados: ' . print_r($crons, true));
+
+    // 2. Verificar si nuestro intervalo está registrado
+    $schedules = wp_get_schedules();
+    error_log('Intervalos disponibles: ' . print_r($schedules, true));
+
+    // 3. Verificar próxima ejecución
+    $next = wp_next_scheduled('auto_certificate_generation');
+    error_log('Próxima ejecución programada: ' . ($next ? date('Y-m-d H:i:s', $next) : 'No programada'));
+
+    // 4. Verificar hooks registrados
+    global $wp_filter;
+    error_log('Hooks registrados para auto_certificate_generation: ' . 
+        (isset($wp_filter['auto_certificate_generation']) ? 'Sí' : 'No'));
+}
+
