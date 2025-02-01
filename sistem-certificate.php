@@ -14,44 +14,72 @@ require_once(__DIR__ . '/vendor/tecnickcom/tcpdf/tcpdf.php');
 require_once(__DIR__. '/lib/phpqrcode/qrlib.php');
 require_once('vendor/autoload.php');
 
-register_activation_hook(__FILE__, function(){
-    error_log('Plugin activandose');
-    correr_cada_cuatro_horas(wp_get_schedules());
-    configurar_cronograma_certificados();
-});
-register_deactivation_hook(__FILE__, 'eliminar_cronograma_certificados');
+// register_activation_hook(__FILE__, function(){
+//     error_log('Plugin activandose');
+//     correr_cada_cuatro_horas(wp_get_schedules());
+//     configurar_cronograma_certificados();
+// });
+// register_deactivation_hook(__FILE__, 'eliminar_cronograma_certificados');
 
 // llamar a todo el plugin cada 4 horas
-function correr_cada_cuatro_horas($schedules) {
-    $schedules['cada_cuatro_horas'] = array(
-        'interval' => 14400,
-        'display' => 'Cada 4 horas'
-    );
-    return $schedules;
-}
-add_filter('cron_schedules', 'correr_cada_cuatro_horas');
+// function correr_cada_cuatro_horas($schedules) {
+//     $schedules['cada_cuatro_horas'] = array(
+//         'interval' => 14400,
+//         'display' => 'Cada 4 horas'
+//     );
+//     return $schedules;
+// }
+// add_filter('cron_schedules', 'correr_cada_cuatro_horas');
 
-// configura el cronograma cron
-function configurar_cronograma_certificados() {
-    error_log('Configurando cronograma para generación de certificados--------');
+// // configura el cronograma cron
+// function configurar_cronograma_certificados() {
+//     error_log('Configurando cronograma para generación de certificados--------');
 
-    if (!wp_next_scheduled('auto_certificate_generation')) {
-        $resultado = wp_schedule_event(time(), 'cada_cuatro_horas', 'auto_certificate_generation');
-        error_log('Resultado de programacion: '. ($resultado ? 'exitoso' : 'fallido'));
-    }
-    debug_certificate_cron();
-}
+//     if (!wp_next_scheduled('auto_certificate_generation')) {
+//         $resultado = wp_schedule_event(time(), 'cada_cuatro_horas', 'auto_certificate_generation');
+//         error_log('Resultado de programacion: '. ($resultado ? 'exitoso' : 'fallido'));
+//     }
+//     debug_certificate_cron();
+// }
 
-// limpiar el cronogram al desactivar el plu
+// // limpiar el cronogram al desactivar el plu
 function eliminar_cronograma_certificados() {
     wp_clear_scheduled_hook('auto_certificate_generation');
 }
 
 // hook para la generacion automatica
-add_action('auto_certificate_generation', 'process_certificate_generation');
+//add_action('auto_certificate_generation', 'process_certificate_generation');
+
+// Agregar estos nuevos hooks
+register_activation_hook(__FILE__, 'activate_certificate_plugin');
+register_deactivation_hook(__FILE__, 'deactivate_certificate_plugin');
+
+function activate_certificate_plugin() {
+    // Ejecutar la generación de certificados inmediatamente al activar
+    process_certificate_generation();
+    error_log('[Certificate System] Plugin activated and certificates processed');
+}
+
+function deactivate_certificate_plugin() {
+    error_log('[Certificate System] Plugin deactivated');
+}
+
+// Agregar hook para actualizaciones del plugin
+add_action('upgrader_process_complete', 'on_plugin_update', 10, 2);
+
+function on_plugin_update($upgrader_object, $options) {
+    if ($options['type'] === 'plugin' && $options['action'] === 'update') {
+        // Verificar si nuestro plugin está siendo actualizado
+        $current_plugin = plugin_basename(__FILE__);
+        if (in_array($current_plugin, $options['plugins'])) {
+            process_certificate_generation();
+            error_log('[Certificate System] Plugin updated and certificates processed');
+        }
+    }
+}
 
 
-use Google_Service_Drive;
+//use Google_Service_Drive;
 set_time_limit(450);
 class CertificateConfig {
     private $config;
@@ -63,7 +91,10 @@ class CertificateConfig {
             'template_path' => [
                 'slide1' => __DIR__ . '/assets/templates/Diapositiva1.png',
                 'slide2' => __DIR__ . '/assets/templates/Diapositiva2.png',
-                'syllabus' => __DIR__ . '/assets/templates/tem_first_auxi.png',
+                'syllabus_prime_auxi' => __DIR__ . '/assets/templates/syllabus/primeros_auxilios.png',
+                'syllabus_trabajos_altura' => __DIR__ . '/assets/templates/syllabus/trabajos_en_altura.png',
+                'syllabus_espacios_confinados' => __DIR__ . '/assets/templates/syllabus/espacios_confinados.png',
+                'syllabus_riesgo_electrico' => __DIR__ . '/assets/templates/syllabus/riesgo_electrico.png',
                 'logo' => __DIR__ . '/assets/logo.png'
             ],
             'fonts' => [
@@ -80,7 +111,9 @@ class CertificateConfig {
         // generate table if note exists
         if ($this->table_not_exists()) {
             $this->create_database_tables();
-        }       
+        }else{
+            error_log("No se pude crarel la tbla");
+        }
     }
     public function table_not_exists() {
         global $wpdb;
@@ -201,7 +234,7 @@ class CertificateImageGenerator {
 
     public function generateCertificateImages($data, $code) {
         try {
-            $image_templates = $this->loadTemplates();
+            $image_templates = $this->loadTemplates($data);
             $colors = $this->defineColors($image_templates);
             
             $this->renderFirstTemplateText($image_templates['base1'], $data, $colors, $code);
@@ -222,12 +255,36 @@ class CertificateImageGenerator {
         }
     }
 
-    private function loadTemplates() {
+    private function filter_syllabus($curso){
+        $templates_syllabus = [
+            'Trabajos en Altura' => 'syllabus_trabajos_altura',
+            'Espacios Confinados' => 'syllabus_espacios_confinados',
+            'Riesgos Eléctricos' => 'syllabus_riesgo_electrico',
+            'Primeros Auxilios' => 'syllabus_prime_auxi'
+
+        ];
+        return $templates_syllabus[$curso];
+
+    }
+
+    private function add_one_year_to_actual_date_emision($date){
+        $date_object = DateTime::createFromFormat('Y-m-d', $date);
+        if(!$date_object){
+            return "formato de fecha invalida";
+        }
+
+        $date_object->modify('+1 year');
+        return $date_object->format('d/m/Y');
+    }
+
+    private function loadTemplates($data) {
+        $curso = $data->course_name;
+        $real_syllabus = $this->filter_syllabus($curso);
         $template_paths = $this->config->get('template_path');
         return [
             'base1' => imagecreatefrompng($template_paths['slide1']),
             'base2' => imagecreatefrompng($template_paths['slide2']),
-            'syllabus' => imagecreatefrompng($template_paths['syllabus'])
+            'syllabus' => imagecreatefrompng($template_paths[$real_syllabus])
         ];
     }
 
@@ -244,11 +301,18 @@ class CertificateImageGenerator {
 
     private function renderFirstTemplateText($image, $data, $colors, $code) {
         $fonts = $this->config->get('fonts');
+        $dni = 0;
+        if(!$data->dni){
+            $dni = 12345678;
+        }else{
+            $dni = $data->dni;
+        }
+
         $text_configs = [
             ['text' => $data->nombre_completo, 'x' => 350, 'y' => 325, 'size' => 30, 'font' => $fonts['nunito'], 'color' => $colors['name']],
-            ['text' => $data->dni, 'x' => 675, 'y' => 382, 'size' => 14, 'font' => $fonts['arimo'], 'color' => $colors['dni']],
+            ['text' => $dni, 'x' => 455, 'y' => 382, 'size' => 14, 'font' => $fonts['arimo'], 'color' => $colors['dni']],
             ['text' => $data->course_name, 'x' => 430, 'y' => 438, 'size' => 25, 'font' => $fonts['dm_serif'], 'color' => $colors['course']],
-            ['text' => date('d/m/Y', strtotime($data->ultima_fecha)), 'x' => 750, 'y' => 565, 'size' => 14, 'font' => $fonts['arimo'], 'color' => $colors['date']],
+            ['text' => date('d/m/Y', strtotime($data->ultima_fecha)), 'x' => 750, 'y' => 570, 'size' => 14, 'font' => $fonts['arimo'], 'color' => $colors['date']],
             ['text' => $code, 'x' => 275, 'y' => 565, 'size' => 14, 'font' => $fonts['dm_serif'], 'color' => $colors['code']]
         ];
 
@@ -268,10 +332,22 @@ class CertificateImageGenerator {
 
     private function renderSecondTemplateText($image, $data, $colors) {
         $fonts = $this->config->get('fonts');
+        $current_date = date('Y-m-d', strtotime($data->ultima_fecha));
+        $date_expiration = $this->add_one_year_to_actual_date_emision($current_date);
+        $dni = 0;
+        if(!$data->dni){
+            $dni = 12345678;
+        }else{
+            $dni = $data->dni;
+        }
+
         $text_configs = [
             ['text' => $data->course_name, 'x' => 360, 'y' => 100, 'size' => 39, 'font' => $fonts['dm_serif'], 'color' => $colors['course2']],
             ['text' => 'Aprobado', 'x' => 220, 'y' => 200, 'size' => 36, 'font' => $fonts['dm_serif'], 'color' => $colors['course2']],
-            ['text' => number_format($data->nota, 1), 'x' => 720, 'y' => 200, 'size' => 36, 'font' => $fonts['nunito'], 'color' => $colors['course2']]
+            ['text' => number_format($data->nota, 1), 'x' => 720, 'y' => 200, 'size' => 36, 'font' => $fonts['nunito'], 'color' => $colors['course2']],
+            ['text' => $data->nombre_completo, 'x' => 170, 'y' => 320, 'size' => 30, 'font' => $fonts['nunito'], 'color' => $colors['name']],
+            ['text' => $dni, 'x' => 300, 'y' => 320, 'size' => 14, 'font' => $fonts['arimo'], 'color' => $colors['dni']],
+            ['text' => $date_expiration, 'x' => 90, 'y' => 755, 'size' => 14, 'font' => $fonts['arimo'], 'color' => $colors['dni']]
         ];
 
         foreach ($text_configs as $config) {
@@ -586,6 +662,8 @@ function process_certificate_generation() {
 
 
 
+
+
 // add_action('certificate_generation_hook', 'process_certificate_generation');
 
 // if (defined('WP_DEBUG') && WP_DEBUG) {
@@ -615,37 +693,37 @@ function process_certificate_generation() {
 // echo '</pre>';
 
 // Función de utilidad para verificar el próximo evento programado
-function check_next_certificate_generation() {
-    $next_scheduled = wp_next_scheduled('auto_certificate_generation');
-    if ($next_scheduled) {
-        return 'Próxima generación de certificados programada para: ' . date('Y-m-d H:i:s', $next_scheduled);
-    }
-    return 'No hay generación de certificados programada.';
-}
+// function check_next_certificate_generation() {
+//     $next_scheduled = wp_next_scheduled('auto_certificate_generation');
+//     if ($next_scheduled) {
+//         return 'Próxima generación de certificados programada para: ' . date('Y-m-d H:i:s', $next_scheduled);
+//     }
+//     return 'No hay generación de certificados programada.';
+// }
 
-// Para mostrar el estado
-add_action('admin_notices', function() {
-    echo '<div class="notice notice-info"><p>' . check_next_certificate_generation() . '</p></div>';
-});
+// // Para mostrar el estado
+// add_action('admin_notices', function() {
+//     echo '<div class="notice notice-info"><p>' . check_next_certificate_generation() . '</p></div>';
+// });
 
 
-// Añade esta función de diagnóstico
-function debug_certificate_cron() {
-    // 1. Verificar si el cron está registrado
-    $crons = _get_cron_array();
-    error_log('Crons programados: ' . print_r($crons, true));
+// // Añade esta función de diagnóstico
+// function debug_certificate_cron() {
+//     // 1. Verificar si el cron está registrado
+//     $crons = _get_cron_array();
+//     error_log('Crons programados: ' . print_r($crons, true));
 
-    // 2. Verificar si nuestro intervalo está registrado
-    $schedules = wp_get_schedules();
-    error_log('Intervalos disponibles: ' . print_r($schedules, true));
+//     // 2. Verificar si nuestro intervalo está registrado
+//     $schedules = wp_get_schedules();
+//     error_log('Intervalos disponibles: ' . print_r($schedules, true));
 
-    // 3. Verificar próxima ejecución
-    $next = wp_next_scheduled('auto_certificate_generation');
-    error_log('Próxima ejecución programada: ' . ($next ? date('Y-m-d H:i:s', $next) : 'No programada'));
+//     // 3. Verificar próxima ejecución
+//     $next = wp_next_scheduled('auto_certificate_generation');
+//     error_log('Próxima ejecución programada: ' . ($next ? date('Y-m-d H:i:s', $next) : 'No programada'));
 
-    // 4. Verificar hooks registrados
-    global $wp_filter;
-    error_log('Hooks registrados para auto_certificate_generation: ' . 
-        (isset($wp_filter['auto_certificate_generation']) ? 'Sí' : 'No'));
-}
+//     // 4. Verificar hooks registrados
+//     global $wp_filter;
+//     error_log('Hooks registrados para auto_certificate_generation: ' . 
+//         (isset($wp_filter['auto_certificate_generation']) ? 'Sí' : 'No'));
+// }
 
