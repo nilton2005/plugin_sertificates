@@ -10,37 +10,35 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-require_once(__DIR__ . '/vendor/tecnickcom/tcpdf/tcpdf.php');
-require_once(__DIR__. '/lib/phpqrcode/qrlib.php');
-require_once('vendor/autoload.php');
 
-// register_activation_hook(__FILE__, function(){
-//     error_log('Plugin activandose');
-//     correr_cada_cuatro_horas(wp_get_schedules());
-//     configurar_cronograma_certificados();
-// });
-// register_deactivation_hook(__FILE__, 'eliminar_cronograma_certificados');
 
-// llamar a todo el plugin cada 4 horas
-// function correr_cada_cuatro_horas($schedules) {
-//     $schedules['cada_cuatro_horas'] = array(
-//         'interval' => 14400,
-//         'display' => 'Cada 4 horas'
-//     );
-//     return $schedules;
-// }
-// add_filter('cron_schedules', 'correr_cada_cuatro_horas');
+register_activation_hook(__FILE__, function(){
+    error_log('Plugin activandose');
+    correr_cada_cuatro_horas(wp_get_schedules());
+    configurar_cronograma_certificados();
+});
+register_deactivation_hook(__FILE__, 'eliminar_cronograma_certificados');
 
-// // configura el cronograma cron
-// function configurar_cronograma_certificados() {
-//     error_log('Configurando cronograma para generación de certificados--------');
+//llamar a todo el plugin cada 4 horas
+function correr_cada_cuatro_horas($schedules) {
+    $schedules['cada_cuatro_horas'] = array(
+        'interval' => 120,
+        'display' => 'Cada 4 horas'
+    );
+    return $schedules;
+}
+add_filter('cron_schedules', 'correr_cada_cuatro_horas');
 
-//     if (!wp_next_scheduled('auto_certificate_generation')) {
-//         $resultado = wp_schedule_event(time(), 'cada_cuatro_horas', 'auto_certificate_generation');
-//         error_log('Resultado de programacion: '. ($resultado ? 'exitoso' : 'fallido'));
-//     }
-//     debug_certificate_cron();
-// }
+// configura el cronograma cron
+function configurar_cronograma_certificados() {
+    error_log('Configurando cronograma para generación de certificados--------');
+
+    if (!wp_next_scheduled('auto_certificate_generation')) {
+        $resultado = wp_schedule_event(time(), 'cada_cuatro_horas', 'auto_certificate_generation');
+        error_log('Resultado de programacion: '. ($resultado ? 'exitoso' : 'fallido'));
+    }
+    debug_certificate_cron();
+}
 
 // // limpiar el cronogram al desactivar el plu
 function eliminar_cronograma_certificados() {
@@ -48,7 +46,7 @@ function eliminar_cronograma_certificados() {
 }
 
 // hook para la generacion automatica
-//add_action('auto_certificate_generation', 'process_certificate_generation');
+add_action('auto_certificate_generation', 'process_certificate_generation');
 
 // Agregar estos nuevos hooks
 register_activation_hook(__FILE__, 'activate_certificate_plugin');
@@ -185,17 +183,19 @@ class CertificateQRGenerator {
 
         $qr_filename = 'certificate_' . md5($code . time()) . '.png';
         $qr_file = $qr_dir . $qr_filename;
-
-        $current_url = add_query_arg('code', urlencode($code), get_permalink());
+        $url_page_validate = home_url('/validar-certificados/');
+        $current_url = add_query_arg('code', urlencode($code), $url_page_validate);
         QRcode::png($current_url, $qr_file, QR_ECLEVEL_H, 15, 2, false);
         
         $QR = imagecreatefrompng($qr_file);
+        $QR = imagescale($QR, 200, 200);
         $logo = imagecreatefrompng($this->config->get('template_path')['logo']);
         
         $this->overlayLogoOnQR($QR, $logo);
         
         imagepng($QR, $qr_file);
         imagedestroy($logo);
+        imagedestroy($QR);
         
         return $QR;
     }
@@ -310,8 +310,8 @@ class CertificateImageGenerator {
 
         $text_configs = [
             ['text' => $data->nombre_completo, 'x' => 350, 'y' => 325, 'size' => 30, 'font' => $fonts['nunito'], 'color' => $colors['name']],
-            ['text' => $dni, 'x' => 455, 'y' => 382, 'size' => 14, 'font' => $fonts['arimo'], 'color' => $colors['dni']],
-            ['text' => $data->course_name, 'x' => 430, 'y' => 438, 'size' => 25, 'font' => $fonts['dm_serif'], 'color' => $colors['course']],
+            ['text' => $dni, 'x' => 420, 'y' => 382, 'size' => 14, 'font' => $fonts['arimo'], 'color' => $colors['dni']],
+            ['text' => $data->course_name, 'x' => 430, 'y' => 455, 'size' => 25, 'font' => $fonts['dm_serif'], 'color' => $colors['course']],
             ['text' => date('d/m/Y', strtotime($data->ultima_fecha)), 'x' => 750, 'y' => 570, 'size' => 14, 'font' => $fonts['arimo'], 'color' => $colors['date']],
             ['text' => $code, 'x' => 275, 'y' => 565, 'size' => 14, 'font' => $fonts['dm_serif'], 'color' => $colors['code']]
         ];
@@ -346,7 +346,7 @@ class CertificateImageGenerator {
             ['text' => 'Aprobado', 'x' => 220, 'y' => 200, 'size' => 36, 'font' => $fonts['dm_serif'], 'color' => $colors['course2']],
             ['text' => number_format($data->nota, 1), 'x' => 720, 'y' => 200, 'size' => 36, 'font' => $fonts['nunito'], 'color' => $colors['course2']],
             ['text' => $data->nombre_completo, 'x' => 170, 'y' => 320, 'size' => 30, 'font' => $fonts['nunito'], 'color' => $colors['name']],
-            ['text' => $dni, 'x' => 300, 'y' => 320, 'size' => 14, 'font' => $fonts['arimo'], 'color' => $colors['dni']],
+            ['text' => $dni, 'x' => 710, 'y' => 320, 'size' => 14, 'font' => $fonts['arimo'], 'color' => $colors['dni']],
             ['text' => $date_expiration, 'x' => 90, 'y' => 755, 'size' => 14, 'font' => $fonts['arimo'], 'color' => $colors['dni']]
         ];
 
@@ -365,7 +365,7 @@ class CertificateImageGenerator {
     }
 
     private function addQRAndSyllabus($templates, $qr_code) {
-        imagecopy($templates['base1'], $qr_code, 20, 20, 0, 0, 100, 100);
+        imagecopy($templates['base1'], $qr_code, 440, 585, 0, 0, 200, 200);
         imagecopy($templates['base2'], $templates['syllabus'], 170, 335, 0, 0, 800, 300);
     }
 
@@ -687,43 +687,43 @@ function process_certificate_generation() {
 //         }
 //     });
 // }
-// $prueba_data = get_pending_certificates();
-// echo '<pre>';
-// print_r($prueba_data);
-// echo '</pre>';
+$prueba_data = get_pending_certificates();
+echo '<pre>';
+print_r($prueba_data);
+echo '</pre>';
 
-// Función de utilidad para verificar el próximo evento programado
-// function check_next_certificate_generation() {
-//     $next_scheduled = wp_next_scheduled('auto_certificate_generation');
-//     if ($next_scheduled) {
-//         return 'Próxima generación de certificados programada para: ' . date('Y-m-d H:i:s', $next_scheduled);
-//     }
-//     return 'No hay generación de certificados programada.';
-// }
+//Función de utilidad para verificar el próximo evento programado
+function check_next_certificate_generation() {
+    $next_scheduled = wp_next_scheduled('auto_certificate_generation');
+    if ($next_scheduled) {
+        return 'Próxima generación de certificados programada para: ' . date('Y-m-d H:i:s', $next_scheduled);
+    }
+    return 'No hay generación de certificados programada.';
+}
 
 // // Para mostrar el estado
-// add_action('admin_notices', function() {
-//     echo '<div class="notice notice-info"><p>' . check_next_certificate_generation() . '</p></div>';
-// });
+add_action('admin_notices', function() {
+    echo '<div class="notice notice-info"><p>' . check_next_certificate_generation() . '</p></div>';
+});
 
 
-// // Añade esta función de diagnóstico
-// function debug_certificate_cron() {
-//     // 1. Verificar si el cron está registrado
-//     $crons = _get_cron_array();
-//     error_log('Crons programados: ' . print_r($crons, true));
+// // función de diagnóstico
+function debug_certificate_cron() {
+    // 1. Verificar si el cron está registrado
+    $crons = _get_cron_array();
+    error_log('Crons programados: ' . print_r($crons, true));
 
-//     // 2. Verificar si nuestro intervalo está registrado
-//     $schedules = wp_get_schedules();
-//     error_log('Intervalos disponibles: ' . print_r($schedules, true));
+    // 2. Verificar si nuestro intervalo está registrado
+    $schedules = wp_get_schedules();
+    error_log('Intervalos disponibles: ' . print_r($schedules, true));
 
-//     // 3. Verificar próxima ejecución
-//     $next = wp_next_scheduled('auto_certificate_generation');
-//     error_log('Próxima ejecución programada: ' . ($next ? date('Y-m-d H:i:s', $next) : 'No programada'));
+    // 3. Verificar próxima ejecución
+    $next = wp_next_scheduled('auto_certificate_generation');
+    error_log('Próxima ejecución programada: ' . ($next ? date('Y-m-d H:i:s', $next) : 'No programada'));
 
-//     // 4. Verificar hooks registrados
-//     global $wp_filter;
-//     error_log('Hooks registrados para auto_certificate_generation: ' . 
-//         (isset($wp_filter['auto_certificate_generation']) ? 'Sí' : 'No'));
-// }
+    // 4. Verificar hooks registrados
+    global $wp_filter;
+    error_log('Hooks registrados para auto_certificate_generation: ' . 
+        (isset($wp_filter['auto_certificate_generation']) ? 'Sí' : 'No'));
+}
 
